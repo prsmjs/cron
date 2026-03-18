@@ -152,7 +152,7 @@ queue.process(async (payload) => {
 cron.add('sync-all-tenants', '0 */6 * * *', async () => {
   const tenants = await db.query('SELECT id FROM tenants WHERE active = true')
   for (const t of tenants) {
-    await queue.group(t.id).push({ tenantId: t.id })
+    await queue.push({ tenantId: t.id }, { group: t.id })
   }
 })
 
@@ -162,15 +162,15 @@ await cron.start()
 
 Every 6 hours, one instance enqueues sync tasks for all tenants. The queue distributes the actual work across all instances with per-tenant concurrency control.
 
-## Real-Time Status with [mesh](https://github.com/nvms/mesh)
+## Real-Time Status with [@prsm/realtime](https://github.com/nvms/realtime)
 
 Broadcast scheduled job results to connected clients:
 
 ```js
 import { Cron } from '@prsm/cron'
-import { MeshServer } from '@mesh-kit/server'
+import { RealtimeServer } from '@prsm/realtime/server'
 
-const mesh = new MeshServer({ redis: { host: 'localhost', port: 6379 } })
+const realtime = new RealtimeServer({ redis: { host: 'localhost', port: 6379 } })
 const cron = new Cron()
 
 cron.add('leaderboard', '*/5 * * * *', async () => {
@@ -178,10 +178,10 @@ cron.add('leaderboard', '*/5 * * * *', async () => {
 })
 
 cron.on('fire', ({ name, result }) => {
-  mesh.broadcastRoom('dashboard', `cron:${name}`, result)
+  realtime.broadcastRoom('dashboard', `cron:${name}`, result)
 })
 
-await mesh.listen(8080)
+await realtime.listen(8080)
 await cron.start()
 ```
 

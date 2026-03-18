@@ -1,0 +1,8 @@
+-- pitfalls --
+
+DST spring-forward silently skips scheduled fires. a job scheduled at
+"30 2 * * *" (2:30 AM daily) skips entirely on the day clocks jump from
+2:00 to 3:00 AM because 2:30 AM does not exist. the parser uses
+Date.setHours which adjusts to 3:30, then the hour check fails and
+advances to the next day. no warning, no error, the job just doesn't
+run that day.
