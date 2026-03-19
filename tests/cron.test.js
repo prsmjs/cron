@@ -446,6 +446,13 @@ describe('Cron', () => {
       cron = new Cron()
       expect(() => cron.add('test', {}, async () => {})).toThrow('required')
     })
+
+    it('rejects invalid exclusiveTtl', () => {
+      cron = new Cron()
+      expect(() =>
+        cron.add('test', { schedule: '1s', exclusive: true, exclusiveTtl: 'garbage' }, async () => {}),
+      ).toThrow('exclusiveTtl')
+    })
   })
 
   describe('prefix', () => {

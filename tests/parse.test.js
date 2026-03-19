@@ -298,6 +298,14 @@ describe('nextCronTime', () => {
     expect(next).toBeNull()
   })
 
+  it('skips months without 31 days', () => {
+    const now = new Date(2026, 3, 1, 0, 0, 0) // April 1
+    const fields = parseCronExpression('0 0 31 * *')
+    const next = nextCronTime(fields, now)
+    expect(next.getMonth()).toBe(4) // May
+    expect(next.getDate()).toBe(31)
+  })
+
   it('accepts a numeric timestamp', () => {
     const ts = new Date(2026, 2, 15, 10, 30, 0).getTime()
     const fields = parseCronExpression('45 * * * *')

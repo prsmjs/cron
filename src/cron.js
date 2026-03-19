@@ -64,13 +64,18 @@ export class Cron extends EventEmitter {
 
     const parsed = parseScheduleValue(opts.schedule)
 
+    const exclusiveTtl = ms(opts.exclusiveTtl ?? DEFAULT_EXCLUSIVE_TTL)
+    if (!Number.isFinite(exclusiveTtl) || exclusiveTtl <= 0) {
+      throw new Error('exclusiveTtl must be a positive duration')
+    }
+
     const job = {
       name,
       type: parsed.type,
       fields: parsed.fields ?? null,
       interval: parsed.interval ?? null,
       exclusive: opts.exclusive ?? false,
-      exclusiveTtl: ms(opts.exclusiveTtl ?? DEFAULT_EXCLUSIVE_TTL),
+      exclusiveTtl,
       handler,
     }
 
@@ -95,6 +100,7 @@ export class Cron extends EventEmitter {
   async start() {
     if (this._closed) throw new Error('cron is stopped')
     await this._readyPromise
+    if (this._closed) throw new Error('cron is stopped')
     this._running = true
     for (const [name, job] of this._jobs) {
       this._scheduleNext(name, job)
