@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { createClient } from 'redis'
 import { randomUUID } from 'crypto'
 import ms from '@prsm/ms'
+import { mutex } from '@prsm/lock'
 import { parseCronExpression, nextCronTime } from './parse.js'
 
 /**
@@ -39,6 +40,7 @@ export class Cron extends EventEmitter {
     this._redis.on('error', () => {})
     this._readyPromise = this._redis.connect()
     this._instanceId = randomUUID()
+    this._lock = mutex({ redis: options.redis ?? {}, prefix: this._prefix })
     this._jobs = new Map()
     this._timers = new Map()
     this._active = new Set()
@@ -115,6 +117,7 @@ export class Cron extends EventEmitter {
     await Promise.all(this._active)
     await this._readyPromise.catch(() => {})
     if (this._redis.isOpen) await this._redis.quit()
+    await this._lock.close().catch(() => {})
   }
 
   /** @returns {string[]} */
@@ -176,43 +179,35 @@ export class Cron extends EventEmitter {
 
   /** @private */
   async _executeTick(name, job, tickId) {
-    const lockKey = `${this._prefix}lock:${name}:${tickId}`
+    const lockKey = `lock:${name}:${tickId}`
     const lockTtl = job.type === 'interval' ? Math.max(job.interval, 1000) : 60000
 
-    let acquired
+    let result
     try {
-      acquired = await this._redis.set(lockKey, this._instanceId, { NX: true, PX: lockTtl })
+      result = await this._lock.acquire(lockKey, { ttl: lockTtl, id: this._instanceId })
     } catch {
       return
     }
 
-    if (!acquired) return
+    if (!result.acquired) return
 
     if (job.exclusive) {
-      const runKey = `${this._prefix}running:${name}`
-      let runLocked
+      const runKey = `running:${name}`
+      let runResult
       try {
-        runLocked = await this._redis.set(runKey, this._instanceId, { NX: true, PX: job.exclusiveTtl })
+        runResult = await this._lock.acquire(runKey, { ttl: job.exclusiveTtl, id: this._instanceId })
       } catch {
         return
       }
-      if (!runLocked) return
+      if (!runResult.acquired) return
       try {
         await this._runHandler(name, tickId, job)
       } finally {
-        await this._releaseLock(runKey).catch(() => {})
+        await this._lock.release(runKey, this._instanceId).catch(() => {})
       }
     } else {
       await this._runHandler(name, tickId, job)
     }
-  }
-
-  /** @private */
-  async _releaseLock(key) {
-    await this._redis.eval(
-      `if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end`,
-      { keys: [key], arguments: [this._instanceId] },
-    )
   }
 
   /** @private */
