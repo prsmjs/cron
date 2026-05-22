@@ -1,6 +1,6 @@
 {
   "name": "@prsm/cron",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Redis-backed distributed cron scheduler with leader election and cron expression support",
   "type": "module",
   "exports": {
