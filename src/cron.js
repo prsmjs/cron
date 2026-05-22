@@ -139,6 +139,52 @@ export class Cron extends EventEmitter {
     return nextCronTime(job.fields, Date.now())
   }
 
+  /**
+   * Run a job's handler immediately, regardless of its schedule. Emits 'fire'
+   * or 'error' just like a scheduled run. For exclusive jobs the running lock
+   * is respected: if the job is already running, this resolves without running.
+   * @param {string} name
+   * @returns {Promise<{ran: boolean, reason?: string}>}
+   */
+  async run(name) {
+    if (this._closed) throw new Error('cron is stopped')
+    const job = this._jobs.get(name)
+    if (!job) throw new Error(`job not found: ${name}`)
+
+    const tickId = job.type === 'interval'
+      ? Math.floor(Date.now() / job.interval)
+      : Math.floor(Date.now() / 60000)
+
+    if (job.exclusive) {
+      const runKey = `running:${name}`
+      let runResult
+      try {
+        runResult = await this._lock.acquire(runKey, { ttl: job.exclusiveTtl, id: this._instanceId })
+      } catch {
+        return { ran: false, reason: 'lock unavailable' }
+      }
+      if (!runResult.acquired) return { ran: false, reason: 'already running' }
+
+      const promise = (async () => {
+        try {
+          await this._runHandler(name, tickId, job)
+        } finally {
+          await this._lock.release(runKey, this._instanceId).catch(() => {})
+        }
+      })()
+      this._active.add(promise)
+      promise.finally(() => this._active.delete(promise))
+      await promise
+      return { ran: true }
+    }
+
+    const promise = this._runHandler(name, tickId, job)
+    this._active.add(promise)
+    promise.finally(() => this._active.delete(promise))
+    await promise
+    return { ran: true }
+  }
+
   /** @private */
   _scheduleNext(name, job) {
     if (!this._running || !this._jobs.has(name)) return

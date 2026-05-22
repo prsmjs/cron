@@ -330,6 +330,79 @@ describe('Cron', () => {
     })
   })
 
+  describe('run', () => {
+    it('runs a job immediately regardless of schedule', async () => {
+      cron = new Cron()
+      let called = false
+      cron.add('manual', '1h', async () => {
+        called = true
+        return 'done'
+      })
+
+      const fired = waitForEvent(cron, 'fire')
+      const result = await cron.run('manual')
+      const payload = await fired
+
+      expect(called).toBe(true)
+      expect(result).toEqual({ ran: true })
+      expect(payload.name).toBe('manual')
+      expect(payload.result).toBe('done')
+    })
+
+    it('does not require start() to have been called', async () => {
+      cron = new Cron()
+      let called = false
+      cron.add('manual', '1h', async () => { called = true })
+      await cron.run('manual')
+      expect(called).toBe(true)
+    })
+
+    it('emits error when the handler throws', async () => {
+      cron = new Cron()
+      cron.add('boom', '1h', async () => { throw new Error('handler failed') })
+
+      const errored = waitForEvent(cron, 'error')
+      await cron.run('boom')
+      const payload = await errored
+
+      expect(payload.name).toBe('boom')
+      expect(payload.error.message).toBe('handler failed')
+    })
+
+    it('throws for an unknown job', async () => {
+      cron = new Cron()
+      await expect(cron.run('nope')).rejects.toThrow('job not found')
+    })
+
+    it('throws after stop', async () => {
+      cron = new Cron()
+      cron.add('a', '1h', async () => {})
+      await cron.start()
+      await cron.stop()
+      await expect(cron.run('a')).rejects.toThrow('stopped')
+      cron = null
+    })
+
+    it('exclusive jobs do not overlap on concurrent runs', async () => {
+      cron = new Cron()
+      let active = 0
+      let maxActive = 0
+      cron.add('excl', { schedule: '1h', exclusive: true }, async () => {
+        active++
+        maxActive = Math.max(maxActive, active)
+        await new Promise((r) => setTimeout(r, 200))
+        active--
+      })
+
+      const [a, b] = await Promise.all([cron.run('excl'), cron.run('excl')])
+      const ran = [a, b]
+      expect(ran.filter((r) => r.ran).length).toBe(1)
+      expect(ran.filter((r) => !r.ran).length).toBe(1)
+      expect(ran.find((r) => !r.ran).reason).toBe('already running')
+      expect(maxActive).toBe(1)
+    })
+  })
+
   describe('stop behavior', () => {
     it('waits for in-flight handlers before closing', async () => {
       cron = new Cron()
