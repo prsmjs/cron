@@ -1,6 +1,6 @@
 {
   "name": "@prsm/cron",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Redis-backed distributed cron scheduler with leader election and cron expression support",
   "type": "module",
   "exports": {
@@ -30,7 +30,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@prsm/lock": "^1.1.0",
+    "@prsm/lock": "^1.2.1",
     "@prsm/ms": "^2.0.0",
     "redis": "^5.1.1"
   },
