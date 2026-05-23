@@ -35,6 +35,7 @@ export class Cron extends EventEmitter {
   /** @param {CronOptions} [options] */
   constructor(options = {}) {
     super()
+    this._tracer = options.tracer ?? null
     this._prefix = options.prefix ?? 'cron:'
     this._redis = createClient(options.redis ?? {})
     this._redis.on('error', () => {})
@@ -258,9 +259,16 @@ export class Cron extends EventEmitter {
 
   /** @private */
   async _runHandler(name, tickId, job) {
-    try {
+    const exec = async () => {
       const result = await job.handler()
       this.emit('fire', { name, tickId, result })
+    }
+    try {
+      if (this._tracer) {
+        await this._tracer.span(`cron.fire:${name}`, { 'cron.name': name, 'cron.tickId': tickId }, exec)
+      } else {
+        await exec()
+      }
     } catch (error) {
       this.emit('error', { name, tickId, error })
     }
