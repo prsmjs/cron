@@ -106,7 +106,7 @@ describe('Cron', () => {
   })
 
   describe('distributed locking', () => {
-    it('only one instance fires per tick', async () => {
+    it('only one instance runs the handler per tick, but the fire event fans out to all', async () => {
       cron = new Cron()
       const cron2 = new Cron()
       extraCrons.push(cron2)
@@ -114,24 +114,33 @@ describe('Cron', () => {
       const fires1 = collectEvents(cron, 'fire')
       const fires2 = collectEvents(cron2, 'fire')
 
-      cron.add('shared', '1s', async () => 'a')
-      cron2.add('shared', '1s', async () => 'b')
+      let calls1 = 0
+      let calls2 = 0
+      cron.add('shared', '1s', async () => { calls1++; return 'a' })
+      cron2.add('shared', '1s', async () => { calls2++; return 'b' })
 
       await cron.start()
       await cron2.start()
 
       await new Promise((r) => setTimeout(r, 3500))
 
-      const totalFires = fires1.length + fires2.length
+      const totalHandlerCalls = calls1 + calls2
+      expect(totalHandlerCalls).toBeGreaterThanOrEqual(2)
+
+      // each tick is handled by exactly one instance: no duplicate per-tick handler runs
+      const callTicksPerInstance = fires1
+        .filter((e) => e.instanceId)
+        .reduce((acc, e) => acc.add(`${e.instanceId}:${e.tickId}`), new Set())
+      expect(callTicksPerInstance.size).toBe(totalHandlerCalls)
+
+      // the fire event fans out: both instances see the same set of tickIds
       const tickIds1 = new Set(fires1.map((e) => e.tickId))
       const tickIds2 = new Set(fires2.map((e) => e.tickId))
-
-      // no tick was executed by both instances
+      expect(tickIds1.size).toBe(totalHandlerCalls)
+      expect(tickIds2.size).toBe(totalHandlerCalls)
       for (const id of tickIds1) {
-        expect(tickIds2.has(id)).toBe(false)
+        expect(tickIds2.has(id)).toBe(true)
       }
-
-      expect(totalFires).toBeGreaterThanOrEqual(2)
     })
 
     it('different job names fire independently', async () => {

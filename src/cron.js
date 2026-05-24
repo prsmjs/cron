@@ -39,14 +39,42 @@ export class Cron extends EventEmitter {
     this._prefix = options.prefix ?? 'cron:'
     this._redis = createClient(options.redis ?? {})
     this._redis.on('error', () => {})
-    this._readyPromise = this._redis.connect()
+    this._eventSub = this._redis.duplicate()
+    this._eventSub.on('error', () => {})
+    this._eventsChannel = `${this._prefix}events`
     this._instanceId = randomUUID()
+    this._readyPromise = (async () => {
+      await this._redis.connect()
+      await this._eventSub.connect()
+      await this._eventSub.subscribe(this._eventsChannel, (message) => this._onEventMessage(message))
+    })()
     this._lock = mutex({ redis: options.redis ?? {}, prefix: this._prefix })
     this._jobs = new Map()
     this._timers = new Map()
     this._active = new Set()
     this._running = false
     this._closed = false
+  }
+
+  /** @private */
+  _onEventMessage(message) {
+    let data
+    try { data = JSON.parse(message) } catch { return }
+    const { type, name, tickId, result, error, instanceId } = data
+    if (type === 'fire') {
+      this.emit('fire', { name, tickId, result, instanceId })
+    } else if (type === 'error') {
+      const err = error ? Object.assign(new Error(error.message ?? 'cron error'), error) : new Error('cron error')
+      this.emit('error', { name, tickId, error: err, instanceId })
+    }
+  }
+
+  /** @private */
+  async _publishEvent(type, payload) {
+    if (!this._redis.isOpen) return
+    try {
+      await this._redis.publish(this._eventsChannel, JSON.stringify({ type, ...payload, instanceId: this._instanceId }))
+    } catch {}
   }
 
   /**
@@ -117,6 +145,8 @@ export class Cron extends EventEmitter {
     this._timers.clear()
     await Promise.all(this._active)
     await this._readyPromise.catch(() => {})
+    if (this._eventSub?.isOpen) await this._eventSub.unsubscribe().catch(() => {})
+    if (this._eventSub?.isOpen) await this._eventSub.quit().catch(() => {})
     if (this._redis.isOpen) await this._redis.quit()
     await this._lock.close().catch(() => {})
   }
@@ -148,6 +178,8 @@ export class Cron extends EventEmitter {
    * @returns {Promise<{ran: boolean, reason?: string}>}
    */
   async run(name) {
+    if (this._closed) throw new Error('cron is stopped')
+    await this._readyPromise
     if (this._closed) throw new Error('cron is stopped')
     const job = this._jobs.get(name)
     if (!job) throw new Error(`job not found: ${name}`)
@@ -259,9 +291,10 @@ export class Cron extends EventEmitter {
 
   /** @private */
   async _runHandler(name, tickId, job) {
+    let result
+    let handlerError
     const exec = async () => {
-      const result = await job.handler()
-      this.emit('fire', { name, tickId, result })
+      result = await job.handler()
     }
     try {
       if (this._tracer) {
@@ -270,7 +303,16 @@ export class Cron extends EventEmitter {
         await exec()
       }
     } catch (error) {
-      this.emit('error', { name, tickId, error })
+      handlerError = error
+    }
+    if (handlerError) {
+      await this._publishEvent('error', {
+        name,
+        tickId,
+        error: { message: handlerError?.message, name: handlerError?.name, stack: handlerError?.stack },
+      })
+    } else {
+      await this._publishEvent('fire', { name, tickId, result })
     }
   }
 }
