@@ -58,17 +58,18 @@ function parseField(field, min, max, names) {
 
 /**
  * @typedef {Object} CronFields
- * @property {number[]} minute
- * @property {number[]} hour
- * @property {number[]} dom
- * @property {number[]} month
- * @property {number[]} dow
- * @property {boolean} domWild
- * @property {boolean} dowWild
+ * @property {number[]} minute - sorted minutes (0-59) the job may fire on, expanded from the minute field.
+ * @property {number[]} hour - sorted hours (0-23) the job may fire on, expanded from the hour field.
+ * @property {number[]} dom - sorted days of the month (1-31) the job may fire on, expanded from the day-of-month field.
+ * @property {number[]} month - sorted months (1-12) the job may fire in, expanded from the month field.
+ * @property {number[]} dow - sorted days of the week (0-6, Sunday is 0) the job may fire on; the cron value 7 is normalized to 0.
+ * @property {boolean} domWild - whether the day-of-month field was "*". When both domWild and dowWild are false, day-of-month and day-of-week are combined with OR logic, per standard cron.
+ * @property {boolean} dowWild - whether the day-of-week field was "*".
  */
 
 /**
- * @param {string} expression - cron expression (5 fields) or @shortcut
+ * Parse a 5-field cron expression or @shortcut into expanded, sorted field sets.
+ * @param {string} expression - a 5-field cron expression ("minute hour day-of-month month day-of-week") or an @shortcut such as @daily. Throws if it does not resolve to exactly 5 fields or contains an out-of-range value.
  * @returns {CronFields}
  */
 export function parseCronExpression(expression) {
@@ -97,9 +98,11 @@ function matchesDay(fields, dom, dow) {
 }
 
 /**
- * @param {CronFields} fields
- * @param {number|Date} after - timestamp or Date to search from
- * @returns {Date|null}
+ * Find the next minute-aligned time at or after a given point that matches the
+ * parsed cron fields.
+ * @param {CronFields} fields - parsed cron fields to match against.
+ * @param {number|Date} after - timestamp in milliseconds or a Date to search from; the result is strictly after the start of the containing minute.
+ * @returns {Date|null} the next matching time, or null if no match falls within the 4-year search window.
  */
 export function nextCronTime(fields, after) {
   const ts = typeof after === 'number' ? after : after.getTime()

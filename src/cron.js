@@ -7,32 +7,33 @@ import { parseCronExpression, nextCronTime } from './parse.js'
 
 /**
  * @typedef {Object} CronOptions
- * @property {{url?: string, host?: string, port?: number, password?: string}} [redis]
- * @property {string} [prefix]
+ * @property {{url?: string, host?: string, port?: number, password?: string}} [redis] - connection options passed through to node-redis createClient (default connects to localhost:6379). All instances that should coordinate must point at the same Redis.
+ * @property {string} [prefix] - key prefix for every lock and the pub/sub channel this scheduler uses (default "cron:"). Instances must share the same prefix to compete for the same ticks and to see each other's fire/error events.
+ * @property {object} [tracer] - optional @prsm/trace tracer; when provided, each handler run is wrapped in a span named "cron.fire:<name>" (default none).
  */
 
 /**
  * @typedef {Object} JobOptions
- * @property {string|number} schedule - cron expression, @shortcut, or duration
- * @property {boolean} [exclusive] - prevent overlapping executions across instances
- * @property {string|number} [exclusiveTtl] - max hold time for exclusive lock (default 10m)
+ * @property {string|number} schedule - when the job runs: a 5-field cron expression, an @shortcut (such as @daily), a duration string ("30s", "5m"), or an interval in milliseconds.
+ * @property {boolean} [exclusive] - when true, prevents overlapping executions of this job across all instances and ticks (default false). While one run is in flight, every other instance and subsequent tick skips until it completes.
+ * @property {string|number} [exclusiveTtl] - safety net for the exclusive run lock, as a duration string ("30m") or milliseconds (default 10m, "600000"). If the holder crashes mid-run, the lock auto-expires after this so the job is not blocked forever; set it longer than the handler can take.
  */
 
 /**
  * @typedef {Object} Job
- * @property {string} name
- * @property {'cron'|'interval'} type
- * @property {import('./parse.js').CronFields|null} fields
- * @property {number|null} interval
- * @property {boolean} exclusive
- * @property {number} exclusiveTtl
- * @property {function(): Promise<any>} handler
+ * @property {string} name - unique name the job was registered under.
+ * @property {'cron'|'interval'} type - "cron" for expression/@shortcut schedules, "interval" for duration or millisecond schedules.
+ * @property {import('./parse.js').CronFields|null} fields - parsed cron fields for cron-type jobs, or null for interval jobs.
+ * @property {number|null} interval - tick interval in milliseconds for interval jobs, or null for cron jobs.
+ * @property {boolean} exclusive - whether overlapping executions across instances and ticks are prevented.
+ * @property {number} exclusiveTtl - exclusive run lock TTL in milliseconds.
+ * @property {function(): Promise<any>} handler - the function invoked when the job fires; its resolved value is delivered on the "fire" event.
  */
 
 const DEFAULT_EXCLUSIVE_TTL = 600000
 
 export class Cron extends EventEmitter {
-  /** @param {CronOptions} [options] */
+  /** @param {CronOptions} [options] - scheduler configuration; all fields are optional and default to a localhost Redis with the "cron:" prefix. */
   constructor(options = {}) {
     super()
     this._tracer = options.tracer ?? null
@@ -78,9 +79,12 @@ export class Cron extends EventEmitter {
   }
 
   /**
-   * @param {string} name
-   * @param {string|number|JobOptions} schedule
-   * @param {function(): Promise<any>} handler
+   * Register a job. Throws if a job with the same name already exists. Jobs may
+   * be added before or after start(); adding after start begins scheduling
+   * immediately.
+   * @param {string} name - unique name for the job, used by remove(), run(), nextFireTime(), and in fire/error events.
+   * @param {string|number|JobOptions} schedule - the schedule as a shorthand value (cron expression, @shortcut, duration string, or milliseconds), or a JobOptions object to also set exclusive/exclusiveTtl.
+   * @param {function(): Promise<any>} handler - the function to run when the job fires; its resolved value is delivered on the "fire" event.
    * @returns {this}
    */
   add(name, schedule, handler) {
@@ -117,7 +121,9 @@ export class Cron extends EventEmitter {
   }
 
   /**
-   * @param {string} name
+   * Stop and unregister a job. Clears its timer; in-flight runs are not aborted.
+   * No-op if the job does not exist.
+   * @param {string} name - name of the job to remove.
    * @returns {this}
    */
   remove(name) {
@@ -157,8 +163,11 @@ export class Cron extends EventEmitter {
   }
 
   /**
-   * @param {string} name
-   * @returns {Date|null}
+   * Compute the next time the named job is scheduled to fire. This is the local
+   * schedule time and does not account for whether another instance will win the
+   * tick lock.
+   * @param {string} name - name of the job.
+   * @returns {Date|null} the next fire time, or null if the job does not exist or has no upcoming match within the search window.
    */
   nextFireTime(name) {
     const job = this._jobs.get(name)
@@ -174,8 +183,8 @@ export class Cron extends EventEmitter {
    * Run a job's handler immediately, regardless of its schedule. Emits 'fire'
    * or 'error' just like a scheduled run. For exclusive jobs the running lock
    * is respected: if the job is already running, this resolves without running.
-   * @param {string} name
-   * @returns {Promise<{ran: boolean, reason?: string}>}
+   * @param {string} name - name of the job to run.
+   * @returns {Promise<{ran: boolean, reason?: string}>} resolves with ran true once the handler completes; ran false (with a reason such as "already running" or "lock unavailable") when an exclusive job was skipped.
    */
   async run(name) {
     if (this._closed) throw new Error('cron is stopped')
