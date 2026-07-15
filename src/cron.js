@@ -7,7 +7,7 @@ import { parseCronExpression, nextCronTime } from './parse.js'
 
 /**
  * @typedef {Object} CronOptions
- * @property {{url?: string, host?: string, port?: number, password?: string}} [redis] - connection options passed through to node-redis createClient (default connects to localhost:6379). All instances that should coordinate must point at the same Redis.
+ * @property {{url?: string, host?: string, port?: number, password?: string}} [redis] - connection options for the node-redis client; provide either a url or discrete host/port/password fields (default connects to localhost:6379). All instances that should coordinate must point at the same Redis.
  * @property {string} [prefix] - key prefix for every lock and the pub/sub channel this scheduler uses (default "cron:"). Instances must share the same prefix to compete for the same ticks and to see each other's fire/error events.
  * @property {object} [tracer] - optional @prsm/trace tracer; when provided, each handler run is wrapped in a span named "cron.fire:<name>" (default none).
  */
@@ -32,13 +32,20 @@ import { parseCronExpression, nextCronTime } from './parse.js'
 
 const DEFAULT_EXCLUSIVE_TTL = 600000
 
+// node-redis only reads host/port from the nested socket object and silently
+// ignores them at the top level, so lift the documented flat fields into place
+function toClientOptions({ host, port, ...rest } = {}) {
+  if (rest.url || (host === undefined && port === undefined)) return rest
+  return { ...rest, socket: { host: host ?? '127.0.0.1', port: port ?? 6379, ...rest.socket } }
+}
+
 export class Cron extends EventEmitter {
   /** @param {CronOptions} [options] - scheduler configuration; all fields are optional and default to a localhost Redis with the "cron:" prefix. */
   constructor(options = {}) {
     super()
     this._tracer = options.tracer ?? null
     this._prefix = options.prefix ?? 'cron:'
-    this._redis = createClient(options.redis ?? {})
+    this._redis = createClient(toClientOptions(options.redis))
     this._redis.on('error', () => {})
     this._eventSub = this._redis.duplicate()
     this._eventSub.on('error', () => {})
@@ -49,7 +56,7 @@ export class Cron extends EventEmitter {
       await this._eventSub.connect()
       await this._eventSub.subscribe(this._eventsChannel, (message) => this._onEventMessage(message))
     })()
-    this._lock = mutex({ redis: options.redis ?? {}, prefix: this._prefix })
+    this._lock = mutex({ redis: toClientOptions(options.redis), prefix: this._prefix })
     this._jobs = new Map()
     this._timers = new Map()
     this._active = new Set()
