@@ -56,6 +56,9 @@ export class Cron extends EventEmitter {
       await this._eventSub.connect()
       await this._eventSub.subscribe(this._eventsChannel, (message) => this._onEventMessage(message))
     })()
+    // annotated to keep @prsm/lock's internal mutex type from leaking into
+    // the generated Cron declaration, which tsc cannot name portably (TS2742)
+    /** @type {any} */
     this._lock = mutex({ redis: toClientOptions(options.redis), prefix: this._prefix })
     this._jobs = new Map()
     this._timers = new Map()
